@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZenWallet WASM Web App</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="/ui/wasm_exec.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background-image: radial-gradient(circle at top right, #1e1b4b, #0f172a);
+      padding: 20px;
+    }
+
+    .glass-panel {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 24px;
+      padding: 40px;
+      width: 100%;
+      max-width: 500px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      animation: fadeIn 0.6s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      text-align: center;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    p.subtitle {
+      text-align: center;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      font-size: 14px;
+    }
+
+    .info-box {
+      background: rgba(0,0,0,0.2);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 24px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .info-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .badge {
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge.ready { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .badge.busy { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .badge.no_keys { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+      box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.39);
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+      transform: translateY(-2px);
+    }
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: rgba(255,255,255,0.1);
+      color: white;
+    }
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.15);
+    }
+
+    .qrcode-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 24px;
+      padding: 24px;
+      background: white;
+      border-radius: 16px;
+    }
+
+    #qrcode {
+      margin-bottom: 16px;
+    }
+
+    .qr-label {
+      color: #333;
+      font-weight: 600;
+      text-align: center;
+      font-size: 14px;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <div class="glass-panel" id="loading-panel">
+    <h1>ZenWallet</h1>
+    <p class="subtitle">Booting Application...</p>
+    <div style="text-align: center; margin-top:20px;">
+       <svg class="animate-spin" style="animation: spin 1s linear infinite;" width="24" height="24" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" stroke-dasharray="32" stroke-dashoffset="10"></circle></svg>
+    </div>
+  </div>
+
+  <div class="glass-panel hidden" id="app">
+    <h1>ZenWallet</h1>
+    <p class="subtitle" id="role-subtitle">Multi-Party Computation</p>
+
+    <div class="info-box">
+      <div class="info-row">
+        <span>Active Wallet</span>
+        <select id="wallet-selector" onchange="changeWallet(this.value)" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 6px; padding: 2px 6px; font-size: 12px; outline: none; cursor: pointer; max-width: 150px;">
+          <option value="">No Wallets</option>
+        </select>
+      </div>
+      <div class="info-row">
+        <span>Node ID</span>
+        <strong id="node-id">-</strong>
+      </div>
+      <div class="info-row">
+        <span>Status</span>
+        <span class="badge" id="node-status">-</span>
+      </div>
+      <div class="info-row">
+        <span>Address</span>
+        <strong id="node-address" style="font-family: monospace; font-size: 12px;">-</strong>
+      </div>
+    </div>
+
+    <!-- Desktop Controls -->
+    <div id="desktop-controls" class="hidden">
+      <button class="btn-primary" id="btn-keygen" onclick="startKeygen()">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+        Generate MPC Keys (3-of-3)
+      </button>
+      
+      <button class="btn-secondary" id="btn-show-qr1" onclick="showQR('mobile1')">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+        Load Mobile 1 WASM App
+      </button>
+      
+      <button class="btn-secondary" id="btn-show-qr2" onclick="showQR('mobile2')">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+        Load Mobile 2 WASM App
+      </button>
+
+      <div class="qrcode-container" id="qr-container">
+        <div id="qrcode"></div>
+        <div class="qr-label" id="qr-text">Scan with Mobile to load WASM app</div>
+      </div>
+    </div>
+
+    <!-- Mobile Controls -->
+    <div id="mobile-controls" class="hidden">
+      <div class="info-box" style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2);">
+        <p style="text-align: center; color: #34d399; font-weight: 600;">📱 WASM Crypto Engine Active</p>
+      </div>
+
+      <button class="btn-secondary" id="btn-keygen-mobile" onclick="startKeygen()">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+        Participate in Keygen
+      </button>
+
+      <button class="btn-primary" id="btn-sign-desktop" onclick="startSign('desktop')">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+        Sign with Desktop
+      </button>
+
+      <button class="btn-secondary" id="btn-sign-mobile" onclick="startSign('other_mobile')">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+        Sign with Other Mobile (Recovery)
+      </button>
+      <p style="text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 12px;">This phone calculates its signature securely using WASM.</p>
+    </div>
+
+  </div>
+
+  <script>
+    let role = location.hash ? location.hash.substring(1) : 'desktop';
+    let myInfo = { id: role };
+    let isDesktop = (role === 'desktop');
+    let qrInst = null;
+    let activeAddress = "";
+    let renderedWallets = "";
+
+    async function initApp() {
+      if (isDesktop) {
+        document.getElementById('loading-panel').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        document.getElementById('desktop-controls').classList.remove('hidden');
+        fetchInfoDesktop();
+        setInterval(fetchInfoDesktop, 2000);
+      } else {
+        const go = new Go();
+        try {
+          const result = await WebAssembly.instantiateStreaming(fetch("/ui/main.wasm"), go.importObject);
+          go.run(result.instance);
+          
+          document.getElementById('loading-panel').classList.add('hidden');
+          document.getElementById('app').classList.remove('hidden');
+          document.getElementById('mobile-controls').classList.remove('hidden');
+
+          const hubURL = window.location.protocol + "//" + window.location.host;
+          myInfo = wasmInit(role, hubURL);
+          updateUI(myInfo);
+        } catch(e) {
+          console.error("WASM load failed", e);
+          document.getElementById('loading-panel').innerHTML = "<h1>WASM Error</h1><p>" + e.message + "</p>";
+        }
+      }
+    }
+
+    async function fetchInfoDesktop() {
+      try {
+        const res = await fetch('/api/info');
+        myInfo = await res.json();
+        updateUI(myInfo);
+      } catch (e) { console.error(e); }
+    }
+
+    function changeWallet(val) {
+      activeAddress = val;
+      updateDOMAddress();
+    }
+
+    function updateDOMAddress() {
+      if (activeAddress) {
+        document.getElementById('node-address').textContent = activeAddress.substring(0, 8) + '...' + activeAddress.substring(36);
+      } else {
+        document.getElementById('node-address').textContent = "None";
+      }
+    }
+
+    function updateUI(info) {
+      document.getElementById('node-id').textContent = info.id.toUpperCase();
+      document.getElementById('role-subtitle').textContent = (info.id === 'desktop') ? 'Desktop Hub (Server)' : 'Mobile Signer (WASM App)';
+      
+      const statusBadge = document.getElementById('node-status');
+      statusBadge.textContent = info.status.replace('_', ' ');
+      statusBadge.className = 'badge ' + info.status;
+
+      if (info.wallets && info.wallets.length > 0) {
+        const sig = info.wallets.join(",");
+        if (sig !== renderedWallets) {
+            renderedWallets = sig;
+            const sel = document.getElementById('wallet-selector');
+            sel.innerHTML = "";
+            info.wallets.forEach(w => {
+               const opt = document.createElement('option');
+               opt.value = w;
+               opt.innerText = w.substring(0,6) + "..." + w.substring(38);
+               sel.appendChild(opt);
+            });
+            if (!activeAddress || !info.wallets.includes(activeAddress)) {
+                activeAddress = info.wallets[0];
+                sel.value = activeAddress;
+            } else {
+                sel.value = activeAddress;
+            }
+        }
+      }
+      
+      updateDOMAddress();
+
+      if (!isDesktop) {
+        if (info.status === 'no_keys') {
+          document.getElementById('btn-sign-desktop').disabled = true;
+          document.getElementById('btn-sign-desktop').style.opacity = 0.5;
+          document.getElementById('btn-sign-mobile').disabled = true;
+          document.getElementById('btn-sign-mobile').style.opacity = 0.5;
+        } else {
+          document.getElementById('btn-sign-desktop').disabled = false;
+          document.getElementById('btn-sign-desktop').style.opacity = 1;
+          document.getElementById('btn-sign-mobile').disabled = false;
+          document.getElementById('btn-sign-mobile').style.opacity = 1;
+        }
+      }
+    }
+
+    async function startKeygen() {
+      if (isDesktop) {
+        document.getElementById('btn-keygen').innerText = "Generating (Creating fresh wallet)...";
+        await fetch('/keygen');
+        setTimeout(() => { document.getElementById('btn-keygen').innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg> Generate New MPC Wallet`; }, 5000);
+      } else {
+        document.getElementById('btn-keygen-mobile').innerText = "Generating Key Share...";
+        wasmKeygen();
+        setTimeout(() => { document.getElementById('btn-keygen-mobile').innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg> Participate in Keygen`;
+                           window.location.reload();
+        }, 8000);
+      }
+    }
+
+    function showQR(peerId) {
+      const qc = document.getElementById('qr-container');
+      qc.style.display = 'flex';
+      
+      const qrcodeEl = document.getElementById('qrcode');
+      qrcodeEl.innerHTML = '';
+      
+      const url = `http://${window.location.host}/ui/#${peerId}`;
+      document.getElementById('qr-text').textContent = `Scan to open WASM app for ${peerId.toUpperCase()}`;
+
+      qrInst = new QRCode(qrcodeEl, {
+        text: url, width: 200, height: 200,
+        colorDark : "#000000", colorLight : "#ffffff",
+        correctLevel : QRCode.CorrectLevel.H
+      });
+    }
+
+    async function startSign(targetPeer) {
+      if (!isDesktop) {
+        if (!activeAddress) {
+            alert("No Wallet Selected or Available!");
+            return;
+        }
+
+        if (targetPeer === 'other_mobile') {
+          targetPeer = (role === 'mobile1') ? 'mobile2' : 'mobile1';
+        }
+        
+        const btnD = document.getElementById('btn-sign-desktop');
+        const btnM = document.getElementById('btn-sign-mobile');
+        btnD.disabled = true;
+        btnM.disabled = true;
+        btnD.innerText = "Signing locally (Takes ~5s)...";
+        btnM.innerText = "...";
+        
+        wasmSign(targetPeer, activeAddress);
+        
+        setTimeout(() => {
+          btnD.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg> Sign with Desktop`;
+          btnM.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg> Sign with Other Mobile (Recovery)`;
+          btnD.disabled = false;
+          btnM.disabled = false;
+        }, 5000);
+      }
+    }
+
+    initApp();
+  </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+2026/04/05 18:02:09 Starting node1 on port 8081, RPC http://127.0.0.1:8545, ChainID 31337...
+2026/04/05 18:02:11 Generating PreParams... (this takes a few seconds)
+2026/04/05 18:02:17 Initializing Keygen LocalParty...
+2026/04/05 18:02:18 -> Sending binance.tsslib.ecdsa.keygen.KGRound1Message msg to node2
+2026/04/05 18:02:19 <- Received binance.tsslib.ecdsa.keygen.KGRound1Message message from node2
+2026/04/05 18:02:20 <- Received binance.tsslib.ecdsa.keygen.KGRound2Message1 message from node2
+2026/04/05 18:02:20 -> Sending binance.tsslib.ecdsa.keygen.KGRound2Message1 msg to node2
+2026/04/05 18:02:20 <- Received binance.tsslib.ecdsa.keygen.KGRound2Message2 message from node2
+2026/04/05 18:02:20 -> Sending binance.tsslib.ecdsa.keygen.KGRound2Message2 msg to node2
+2026/04/05 18:02:21 -> Sending binance.tsslib.ecdsa.keygen.KGRound3Message msg to node2
+2026/04/05 18:02:21 <- Received binance.tsslib.ecdsa.keygen.KGRound3Message message from node2
+2026/04/05 18:02:21 =============== KEYGEN COMPLETE ===============
+2026/04/05 18:02:21 Public Key: 04933cbe1f4b824ee2db477bee9f57593c8372e8863e59121d2efa6944cb2561e522cc8d181947e38c84609b94fa73af288deccedd3e1f0623a815a79c78593ac4
+2026/04/05 18:02:21 Ethereum Address: 0xAB8d9A341c6BbF43A991703847659115B886F33e
+2026/04/05 18:02:21 ==============================================
+2026/04/05 18:02:26 Proposing Tx Hash: cef42d8bcd2904bf18fbcca4e3faf012d4bc258fd542098f874467b0908fdb81 to peer...
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound1Message1 msg to node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound1Message2 msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound1Message2 message from node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound1Message1 message from node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound2Message msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound2Message message from node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound3Message message from node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound3Message msg to node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound4Message msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound4Message message from node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound5Message msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound5Message message from node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound6Message msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound6Message message from node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound7Message msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound7Message message from node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound8Message message from node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound8Message msg to node2
+2026/04/05 18:02:26 -> Sending binance.tsslib.ecdsa.signing.SignRound9Message msg to node2
+2026/04/05 18:02:26 <- Received binance.tsslib.ecdsa.signing.SignRound9Message message from node2
+2026/04/05 18:02:26 =============== SIGN COMPLETE ===============
+2026/04/05 18:02:26 Signature R: 528b0f0c7a47d3447770fa90c59a95cbd8f70f29f5dc33d2ada30b1d7f8513ec
+2026/04/05 18:02:26 Signature S: 2eaaa7c06aadcdf3c801ce9d33299d73dc036582b7904be694a862be6809e7e4
+2026/04/05 18:02:26 Recovery ID: 1
+2026/04/05 18:02:26 Broadcasting Transaction!!
+2026/04/05 18:02:26 Success! View Transaction Hash: 0xe44263da0038d3bef1e39c3de75b427b8a8777ced1868c6ca86954e1e1b91ca5
+2026/04/05 18:02:26 =============================================
