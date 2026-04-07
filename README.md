@@ -160,4 +160,71 @@ sequenceDiagram
 
 > **Key advantage:** Zero changes to the MPC cryptographic layer. The TSS ceremony, the secp256k1 signing, and the Ethereum transaction flow remain completely untouched.
 
+---
 
+## 🔒 Encrypted Keyshare Storage (WebAuthn PRF)
+
+Mobile keyshares are encrypted at rest using **hardware-backed keys** derived from the device's Secure Enclave via the [WebAuthn PRF extension](https://w3c.github.io/webauthn/#prf-extension). The encryption key is **never stored** — it's derived on-the-fly during biometric authentication.
+
+### How It Works
+
+| Layer | Technology | Purpose |
+|:---|:---|:---|
+| **Secure Enclave** | Apple A-series / Android Titan M | Stores P-256 key, computes HMAC-based PRF |
+| **PRF Extension** | WebAuthn Level 3 (built into browser) | Derives 32-byte secret from Secure Enclave |
+| **Key Derivation** | HKDF-SHA256 | Converts PRF output → AES-256-GCM key |
+| **Encryption** | AES-256-GCM (Web Crypto API) | Encrypts keyshare JSON before localStorage write |
+
+> No installation required — PRF is a built-in browser capability (Safari 18+, Chrome 120+).
+
+### Keygen → Encrypt → Store
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 User
+    participant Browser as 🌐 Browser
+    participant Enclave as 🔒 Secure Enclave
+    participant WASM as ⚙️ WASM
+    participant Storage as 💾 localStorage
+
+    User->>Browser: Tap "Participate in Keygen"
+    Browser->>WASM: wasmKeygen()
+    WASM-->>Browser: keyshare JSON (via zenSaveKeyshare callback)
+    Browser->>Enclave: navigator.credentials.get() + PRF salt
+    Note over Enclave: Face ID / Touch ID
+    Enclave-->>Browser: PRF output (32 bytes)
+    Browser->>Browser: HKDF-SHA256 → AES-256-GCM key
+    Browser->>Browser: Encrypt keyshare JSON
+    Browser->>Storage: Store {enc:true, iv, ciphertext}
+```
+
+### Authenticate → Decrypt → Sign
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 User
+    participant Browser as 🌐 Browser
+    participant Enclave as 🔒 Secure Enclave
+    participant WASM as ⚙️ WASM
+    participant Storage as 💾 localStorage
+
+    User->>Browser: Tap "Sign with Desktop"
+    Browser->>Enclave: navigator.credentials.get() + PRF salt
+    Note over Enclave: Face ID / Touch ID
+    Enclave-->>Browser: Assertion + PRF output
+    Browser->>Browser: HKDF-SHA256 → AES-256-GCM key
+    Browser->>Storage: Read encrypted keyshare
+    Browser->>Browser: AES-GCM decrypt → plaintext keyshare
+    Browser->>WASM: wasmLoadDecryptedKeys(addr, json)
+    Browser->>WASM: wasmSetAuthToken(token)
+    Browser->>WASM: wasmSign(peer, addr)
+    WASM->>WASM: MPC ceremony with plaintext keyshare (in memory only)
+```
+
+### Fallback Behavior
+
+When the PRF extension is not supported (older browsers/authenticators), ZenWallet falls back to **plaintext `localStorage`** storage — the same behavior as before. The passkey badge on the mobile UI indicates the encryption status:
+
+- 🔒 **Registered (Encrypted)** — keyshares are encrypted with hardware-backed key
+- 🔐 **Registered** — passkey works, but PRF not supported (plaintext storage)
+- ⚠️ **Not Registered** — no passkey, no encryption

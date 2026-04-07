@@ -6,6 +6,7 @@
   <title>ZenWallet WASM Web App</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="/ui/wasm_exec.js"></script>
+  <script src="/ui/keyshare_crypto.js"></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -348,7 +349,84 @@
     let activeAddress = "";
     let renderedWallets = "";
     let passkeyRegistered = false;
+    let prfSupported = false;
+    let cachedPRFKey = null;  // CryptoKey derived from PRF, cached for session
+    let credentialId = null;  // stored credential ID for PRF assertions
     const hubUrl = window.location.protocol + "//" + window.location.host;
+
+    // --- Keyshare Storage Callbacks (called by WASM) ---
+
+    /**
+     * Called by WASM wasmInit to load keyshares.
+     * For encrypted stores, returns only wallet list (keys loaded later after auth).
+     * For plaintext, returns keyshares directly.
+     */
+    window.zenLoadKeyshares = function(nodeId) {
+      const storage = localStorage;
+      const manifestStr = storage.getItem(nodeId + '_wallets');
+      if (!manifestStr) return null;
+
+      let wallets;
+      try { wallets = JSON.parse(manifestStr); } catch(e) { return null; }
+      if (!wallets || wallets.length === 0) return null;
+
+      const keyshares = {};
+      let hasEncrypted = false;
+
+      for (const wAddr of wallets) {
+        const stored = storage.getItem('wallet_' + nodeId + '_' + wAddr);
+        if (!stored) continue;
+
+        if (ZenCrypto.isEncrypted(stored)) {
+          hasEncrypted = true;
+          // Encrypted — cannot decrypt without PRF auth, skip for now
+          // Keys will be loaded via wasmLoadDecryptedKeys after passkey auth
+        } else {
+          // Plaintext — load directly
+          keyshares[wAddr] = stored;
+        }
+      }
+
+      if (hasEncrypted) {
+        console.log('🔒 Encrypted keyshares detected — will decrypt after passkey auth');
+      }
+
+      return {
+        wallets: Object.keys(keyshares),
+        keyshares: keyshares
+      };
+    };
+
+    /**
+     * Called by WASM saveKeys to persist a keyshare.
+     * Encrypts with PRF-derived key if available, otherwise stores plaintext.
+     */
+    window.zenSaveKeyshare = async function(nodeId, addr, jsonData) {
+      const storage = localStorage;
+
+      if (prfSupported && cachedPRFKey) {
+        // Encrypt with PRF-derived AES key
+        try {
+          const encrypted = await ZenCrypto.encryptKeyshare(cachedPRFKey, jsonData);
+          storage.setItem('wallet_' + nodeId + '_' + addr, encrypted);
+          console.log('🔒 Keyshare encrypted and saved for', addr);
+        } catch(e) {
+          console.error('Encryption failed, saving plaintext:', e);
+          storage.setItem('wallet_' + nodeId + '_' + addr, jsonData);
+        }
+      } else {
+        // Plaintext fallback
+        storage.setItem('wallet_' + nodeId + '_' + addr, jsonData);
+        console.log('📝 Keyshare saved (plaintext) for', addr);
+      }
+
+      // Update wallet manifest
+      const manifestStr = storage.getItem(nodeId + '_wallets');
+      let wallets = [];
+      try { wallets = JSON.parse(manifestStr) || []; } catch(e) {}
+      if (!wallets.includes(addr)) wallets.push(addr);
+      storage.setItem(nodeId + '_wallets', JSON.stringify(wallets));
+    };
 
     // --- Base64URL Helpers ---
     function base64urlToBuffer(base64url) {
@@ -391,12 +469,33 @@
           }));
         }
 
-        // 3. Create credential (triggers biometric prompt)
+        // 3. Add PRF extension for hardware-backed keyshare encryption
+        options.publicKey.extensions = {
+          ...options.publicKey.extensions,
+          ...ZenCrypto.getPRFExtension()
+        };
+
+        // 4. Create credential (triggers biometric prompt)
         showAuthOverlay("Registering Passkey", "Use Face ID or Touch ID to create your passkey for this device.");
         const credential = await navigator.credentials.create(options);
         hideAuthOverlay();
 
-        // 4. Send credential to server for validation
+        // 5. Check PRF support from extension results
+        const extResults = credential.getClientExtensionResults();
+        if (extResults.prf && extResults.prf.enabled) {
+          prfSupported = true;
+          localStorage.setItem(role + '_prf_supported', 'true');
+          console.log('🔒 PRF extension supported — keyshare encryption enabled');
+        } else {
+          prfSupported = false;
+          console.log('⚠️ PRF extension not supported — using plaintext storage');
+        }
+
+        // Store credential ID for future PRF assertions
+        credentialId = credential.id;
+        localStorage.setItem(role + '_credential_id', credential.id);
+
+        // 6. Send credential to server for validation
         const finishResp = await fetch(`${hubUrl}/webauthn/register/finish?device_id=${role}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -457,12 +556,35 @@
           }));
         }
 
-        // 3. Get assertion (triggers Face ID / Touch ID)
+        // 3. Add PRF extension if supported
+        if (prfSupported) {
+          options.publicKey.extensions = {
+            ...options.publicKey.extensions,
+            ...ZenCrypto.getPRFExtension()
+          };
+        }
+
+        // 4. Get assertion (triggers Face ID / Touch ID)
         showAuthOverlay("Authenticate to Sign", "Use Face ID or Touch ID to authorize this MPC signing operation.");
         const assertion = await navigator.credentials.get(options);
         hideAuthOverlay();
 
-        // 4. Send assertion to server for verification
+        // 5. Extract PRF output and derive encryption key
+        if (prfSupported) {
+          const extResults = assertion.getClientExtensionResults();
+          const prfOutput = ZenCrypto.extractPRFOutput(extResults);
+          if (prfOutput) {
+            cachedPRFKey = await ZenCrypto.deriveKeyFromPRF(prfOutput);
+            console.log('🔑 PRF key derived from Secure Enclave');
+
+            // Decrypt any encrypted keyshares and load into WASM
+            await decryptAndLoadKeyshares();
+          } else {
+            console.warn('⚠️ PRF output not available despite being supported');
+          }
+        }
+
+        // 6. Send assertion to server for verification
         const finishResp = await fetch(`${hubUrl}/webauthn/auth/finish?device_id=${role}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -496,6 +618,37 @@
       }
     }
 
+    /**
+     * Decrypt encrypted keyshares from localStorage and inject into WASM runtime
+     */
+    async function decryptAndLoadKeyshares() {
+      if (!cachedPRFKey) return;
+
+      const storage = localStorage;
+      const manifestStr = storage.getItem(role + '_wallets');
+      if (!manifestStr) return;
+
+      let wallets;
+      try { wallets = JSON.parse(manifestStr); } catch(e) { return; }
+
+      for (const wAddr of wallets) {
+        const stored = storage.getItem('wallet_' + role + '_' + wAddr);
+        if (!stored) continue;
+
+        if (ZenCrypto.isEncrypted(stored)) {
+          try {
+            const plaintext = await ZenCrypto.decryptKeyshare(cachedPRFKey, stored);
+            const result = wasmLoadDecryptedKeys(wAddr, plaintext);
+            if (result === 'ok') {
+              console.log('🔓 Decrypted and loaded keyshare:', wAddr.substring(0, 10) + '...');
+            }
+          } catch(e) {
+            console.error('Failed to decrypt keyshare for', wAddr, e);
+          }
+        }
+      }
+    }
+
     // --- Auth Overlay ---
     function showAuthOverlay(title, message) {
       document.getElementById('auth-title').textContent = title;
@@ -514,7 +667,7 @@
 
       if (passkeyRegistered) {
         badge.className = 'passkey-badge registered';
-        badge.textContent = '🔐 Registered';
+        badge.textContent = prfSupported ? '🔒 Registered (Encrypted)' : '🔐 Registered';
         regBtn.style.display = 'none';
       } else {
         badge.className = 'passkey-badge not-registered';
@@ -528,6 +681,11 @@
         const resp = await fetch(`${hubUrl}/webauthn/status?device_id=${role}`);
         const data = await resp.json();
         passkeyRegistered = data.registered;
+
+        // Restore PRF support flag from localStorage
+        prfSupported = localStorage.getItem(role + '_prf_supported') === 'true';
+        credentialId = localStorage.getItem(role + '_credential_id');
+
         updatePasskeyUI();
       } catch(e) {
         console.warn("Could not check passkey status:", e);
@@ -642,8 +800,63 @@
         wasmKeygen();
         setTimeout(async () => {
           document.getElementById('btn-keygen-mobile').innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg> Participate in Keygen`;
-          // After keygen, prompt passkey registration if not already registered
-          if (!passkeyRegistered) {
+
+          // After keygen, if PRF supported and keys exist, encrypt them
+          if (prfSupported && passkeyRegistered) {
+            try {
+              // Trigger passkey auth to get PRF key for encryption
+              showAuthOverlay("Encrypting Keyshare", "Use Face ID or Touch ID to encrypt your new keyshare.");
+              const authResp = await fetch(`${hubUrl}/webauthn/auth/begin`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device_id: role })
+              });
+              const authOptions = await authResp.json();
+              authOptions.publicKey.challenge = base64urlToBuffer(authOptions.publicKey.challenge);
+              if (authOptions.publicKey.allowCredentials) {
+                authOptions.publicKey.allowCredentials = authOptions.publicKey.allowCredentials.map(c => ({
+                  ...c, id: base64urlToBuffer(c.id)
+                }));
+              }
+              authOptions.publicKey.extensions = {
+                ...authOptions.publicKey.extensions,
+                ...ZenCrypto.getPRFExtension()
+              };
+
+              const assertion = await navigator.credentials.get(authOptions);
+              hideAuthOverlay();
+
+              const extR = assertion.getClientExtensionResults();
+              const prfOut = ZenCrypto.extractPRFOutput(extR);
+              if (prfOut) {
+                cachedPRFKey = await ZenCrypto.deriveKeyFromPRF(prfOut);
+                // Re-encrypt all keyshares with the PRF key
+                await reencryptAllKeyshares();
+                console.log('🔒 New keyshare encrypted with Secure Enclave key');
+              }
+
+              // Also send finish to server to complete the auth ceremony
+              await fetch(`${hubUrl}/webauthn/auth/finish?device_id=${role}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  id: assertion.id,
+                  rawId: bufferToBase64url(assertion.rawId),
+                  type: assertion.type,
+                  response: {
+                    authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+                    clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+                    signature: bufferToBase64url(assertion.response.signature),
+                    userHandle: assertion.response.userHandle ? bufferToBase64url(assertion.response.userHandle) : "",
+                  }
+                })
+              });
+            } catch(e) {
+              hideAuthOverlay();
+              console.warn('Post-keygen encryption skipped:', e.message);
+            }
+          } else if (!passkeyRegistered) {
+            // Prompt passkey registration
             setTimeout(() => {
               if (confirm("🔐 Keygen complete! Register a passkey (Face ID / Touch ID) to secure your signing operations?")) {
                 registerPasskey();
@@ -652,6 +865,43 @@
           }
           window.location.reload();
         }, 8000);
+      }
+    }
+
+    /**
+     * Re-encrypt all plaintext keyshares in localStorage with the PRF-derived key
+     */
+    async function reencryptAllKeyshares() {
+      if (!cachedPRFKey) return;
+
+      const storage = localStorage;
+      const manifestStr = storage.getItem(role + '_wallets');
+      if (!manifestStr) return;
+
+      let wallets;
+      try { wallets = JSON.parse(manifestStr); } catch(e) { return; }
+
+      for (const wAddr of wallets) {
+        const stored = storage.getItem('wallet_' + role + '_' + wAddr);
+        if (!stored) continue;
+
+        // Get plaintext from WASM memory
+        let plaintext = stored;
+        if (ZenCrypto.isEncrypted(stored)) continue; // already encrypted
+
+        // If WASM has the key in memory, use that (most reliable)
+        const wasmJSON = wasmGetKeyshareJSON(wAddr);
+        if (wasmJSON && wasmJSON.length > 0) {
+          plaintext = wasmJSON;
+        }
+
+        try {
+          const encrypted = await ZenCrypto.encryptKeyshare(cachedPRFKey, plaintext);
+          storage.setItem('wallet_' + role + '_' + wAddr, encrypted);
+          console.log('🔒 Re-encrypted keyshare:', wAddr.substring(0, 10) + '...');
+        } catch(e) {
+          console.error('Failed to encrypt keyshare:', wAddr, e);
+        }
       }
     }
 
