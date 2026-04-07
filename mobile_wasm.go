@@ -38,6 +38,10 @@ var (
 
 	signEndChan = make(chan *common.SignatureData, 1)
 	mtx         sync.Mutex
+
+	// Passkey auth token (set by JS after WebAuthn assertion)
+	authToken    string
+	authTokenMtx sync.Mutex
 )
 
 type WireMessage struct {
@@ -58,9 +62,39 @@ func main() {
 	js.Global().Set("wasmInit", js.FuncOf(wasmInit))
 	js.Global().Set("wasmKeygen", js.FuncOf(wasmKeygen))
 	js.Global().Set("wasmSign", js.FuncOf(wasmSign))
+	js.Global().Set("wasmSetAuthToken", js.FuncOf(wasmSetAuthToken))
+	js.Global().Set("wasmClearAuthToken", js.FuncOf(wasmClearAuthToken))
+	js.Global().Set("wasmHasAuthToken", js.FuncOf(wasmHasAuthToken))
+	js.Global().Set("wasmLoadDecryptedKeys", js.FuncOf(wasmLoadDecryptedKeys))
+	js.Global().Set("wasmGetKeyshareJSON", js.FuncOf(wasmGetKeyshareJSON))
 
 	go forwardMessages()
 	<-c
+}
+
+func wasmSetAuthToken(this js.Value, args []js.Value) any {
+	if len(args) < 1 {
+		return js.ValueOf("error: missing token")
+	}
+	authTokenMtx.Lock()
+	authToken = args[0].String()
+	authTokenMtx.Unlock()
+	fmt.Println("WASM: Auth token set (passkey verified)")
+	return js.ValueOf("ok")
+}
+
+func wasmClearAuthToken(this js.Value, args []js.Value) any {
+	authTokenMtx.Lock()
+	authToken = ""
+	authTokenMtx.Unlock()
+	return js.ValueOf("ok")
+}
+
+func wasmHasAuthToken(this js.Value, args []js.Value) any {
+	authTokenMtx.Lock()
+	has := authToken != ""
+	authTokenMtx.Unlock()
+	return js.ValueOf(has)
 }
 
 func getEthAddressFor(data *keygen.LocalPartySaveData) string {
@@ -96,25 +130,53 @@ func wasmInit(this js.Value, args []js.Value) any {
 	localPartyID = partyIDs[myID]
 	allParties = tss.NewPeerContext(tss.SortPartyIDs([]*tss.PartyID{p1, p2, p3}))
 	
-	// Load Keys from LocalStorage
-	storage := js.Global().Get("localStorage")
-	manifest := storage.Call("getItem", myID+"_wallets")
+	// Load Keys via JS callback (handles decryption if needed)
 	var wallets []string
-	if !manifest.IsNull() && !manifest.IsUndefined() && manifest.String() != "" {
-		json.Unmarshal([]byte(manifest.String()), &wallets)
-		for _, wAddr := range wallets {
-			keyStr := storage.Call("getItem", "wallet_"+myID+"_"+wAddr)
-			if !keyStr.IsNull() && !keyStr.IsUndefined() {
-				var data keygen.LocalPartySaveData
-				if json.Unmarshal([]byte(keyStr.String()), &data) == nil {
-					keyDataMap[wAddr] = &data
-					if activeAddress == "" {
-						activeAddress = wAddr
+	zenLoad := js.Global().Get("zenLoadKeyshares")
+	if !zenLoad.IsUndefined() && !zenLoad.IsNull() {
+		result := zenLoad.Invoke(myID)
+		if !result.IsNull() && !result.IsUndefined() {
+			// result is a JS object: { wallets: ["0xABC"], keyshares: { "0xABC": "{...json...}" } }
+			walletsJS := result.Get("wallets")
+			keyshareMap := result.Get("keyshares")
+			if !walletsJS.IsUndefined() && walletsJS.Length() > 0 {
+				for i := 0; i < walletsJS.Length(); i++ {
+					wAddr := walletsJS.Index(i).String()
+					wallets = append(wallets, wAddr)
+					keyStr := keyshareMap.Get(wAddr)
+					if !keyStr.IsUndefined() && !keyStr.IsNull() {
+						var data keygen.LocalPartySaveData
+						if json.Unmarshal([]byte(keyStr.String()), &data) == nil {
+							keyDataMap[wAddr] = &data
+							if activeAddress == "" {
+								activeAddress = wAddr
+							}
+						}
+					}
+				}
+				fmt.Printf("WASM: Loaded %d existing wallets\n", len(keyDataMap))
+			}
+		}
+	} else {
+		// Fallback: direct localStorage (for unencrypted/legacy mode)
+		storage := js.Global().Get("localStorage")
+		manifest := storage.Call("getItem", myID+"_wallets")
+		if !manifest.IsNull() && !manifest.IsUndefined() && manifest.String() != "" {
+			json.Unmarshal([]byte(manifest.String()), &wallets)
+			for _, wAddr := range wallets {
+				keyStr := storage.Call("getItem", "wallet_"+myID+"_"+wAddr)
+				if !keyStr.IsNull() && !keyStr.IsUndefined() {
+					var data keygen.LocalPartySaveData
+					if json.Unmarshal([]byte(keyStr.String()), &data) == nil {
+						keyDataMap[wAddr] = &data
+						if activeAddress == "" {
+							activeAddress = wAddr
+						}
 					}
 				}
 			}
+			fmt.Printf("WASM: Loaded %d existing wallets (plaintext fallback)\n", len(keyDataMap))
 		}
-		fmt.Printf("WASM: Loaded %d existing wallets\n", len(keyDataMap))
 	}
 	
 	go pollInbox()
@@ -140,18 +202,66 @@ func saveKeys(data *keygen.LocalPartySaveData) {
 	keyDataMap[addr] = data
 	activeAddress = addr
 
-	storage := js.Global().Get("localStorage")
 	b, _ := json.Marshal(data)
-	storage.Call("setItem", "wallet_"+myID+"_"+addr, string(b))
+	
+	// Use JS callback for saving (handles encryption if PRF supported)
+	zenSave := js.Global().Get("zenSaveKeyshare")
+	if !zenSave.IsUndefined() && !zenSave.IsNull() {
+		zenSave.Invoke(myID, addr, string(b))
+	} else {
+		// Fallback: direct localStorage (plaintext)
+		storage := js.Global().Get("localStorage")
+		storage.Call("setItem", "wallet_"+myID+"_"+addr, string(b))
 
-	var wallets []string
-	for k := range keyDataMap {
-		wallets = append(wallets, k)
+		var wallets []string
+		for k := range keyDataMap {
+			wallets = append(wallets, k)
+		}
+		manifestBytes, _ := json.Marshal(wallets)
+		storage.Call("setItem", myID+"_wallets", string(manifestBytes))
 	}
-	manifestBytes, _ := json.Marshal(wallets)
-	storage.Call("setItem", myID+"_wallets", string(manifestBytes))
 
 	fmt.Printf("WASM: Saved new keyshare for wallet %s\n", addr)
+}
+
+// wasmLoadDecryptedKeys allows JS to inject a decrypted keyshare into WASM memory
+// Called after PRF-based decryption on the JS side
+func wasmLoadDecryptedKeys(this js.Value, args []js.Value) any {
+	if len(args) < 2 {
+		return js.ValueOf("error: missing wallet address or keyshare JSON")
+	}
+	walletAddr := args[0].String()
+	keyshareJSON := args[1].String()
+
+	var data keygen.LocalPartySaveData
+	if err := json.Unmarshal([]byte(keyshareJSON), &data); err != nil {
+		fmt.Printf("WASM: Failed to load decrypted keyshare: %v\n", err)
+		return js.ValueOf("error: invalid keyshare JSON")
+	}
+
+	keyDataMap[walletAddr] = &data
+	if activeAddress == "" {
+		activeAddress = walletAddr
+	}
+	fmt.Printf("WASM: Loaded decrypted keyshare for wallet %s\n", walletAddr)
+	return js.ValueOf("ok")
+}
+
+// wasmGetKeyshareJSON exports a keyshare as JSON so JS can encrypt it
+func wasmGetKeyshareJSON(this js.Value, args []js.Value) any {
+	if len(args) < 1 {
+		return js.ValueOf("")
+	}
+	walletAddr := args[0].String()
+	data, ok := keyDataMap[walletAddr]
+	if !ok {
+		return js.ValueOf("")
+	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		return js.ValueOf("")
+	}
+	return js.ValueOf(string(b))
 }
 
 func wasmKeygen(this js.Value, args []js.Value) any {
@@ -189,6 +299,15 @@ func wasmSign(this js.Value, args []js.Value) any {
 	
 	if len(args) < 2 {
 		return js.ValueOf("error: missing target peer or wallet address")
+	}
+
+	// Check passkey authentication
+	authTokenMtx.Lock()
+	hasAuth := authToken != ""
+	authTokenMtx.Unlock()
+	if !hasAuth {
+		fmt.Println("WASM: ❌ Sign rejected — no passkey auth token")
+		return js.ValueOf("error: passkey authentication required")
 	}
 
 	targetPeer := args[0].String()
@@ -301,6 +420,11 @@ func captureSignResult() {
 	mtx.Lock()
 	defer mtx.Unlock()
 	currentParty = nil
+
+	// Consume auth token after signing (one-time use)
+	authTokenMtx.Lock()
+	authToken = ""
+	authTokenMtx.Unlock()
 
 	sigData := map[string]any{
 		"r": hex.EncodeToString(res.R),

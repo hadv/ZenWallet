@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -25,6 +27,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 var (
@@ -67,6 +72,15 @@ var (
 
 	inbox    = make(map[string][]WireMessage)
 	inboxMtx sync.Mutex
+
+	// WebAuthn
+	webAuthn        *webauthn.WebAuthn
+	webauthnUsers   = make(map[string]*WebAuthnUser) // deviceID -> user
+	webauthnMtx     sync.RWMutex
+	authTokens      = make(map[string]time.Time) // token -> expiry
+	authTokensMtx   sync.RWMutex
+	pendingSessions = make(map[string]*webauthn.SessionData) // deviceID -> session
+	pendingMtx      sync.Mutex
 )
 
 type WireMessage struct {
@@ -93,6 +107,231 @@ func getLocalIP() string {
 		}
 	}
 	return "127.0.0.1"
+}
+
+// --- WebAuthn User Implementation ---
+
+type WebAuthnUser struct {
+	ID          []byte
+	Name        string
+	DisplayName string
+	Credentials []webauthn.Credential
+}
+
+func (u *WebAuthnUser) WebAuthnID() []byte                         { return u.ID }
+func (u *WebAuthnUser) WebAuthnName() string                       { return u.Name }
+func (u *WebAuthnUser) WebAuthnDisplayName() string                { return u.DisplayName }
+func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential { return u.Credentials }
+
+// generateAuthToken creates a short-lived token proving passkey auth succeeded
+func generateAuthToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	token := base64.URLEncoding.EncodeToString(b)
+	authTokensMtx.Lock()
+	authTokens[token] = time.Now().Add(5 * time.Minute)
+	authTokensMtx.Unlock()
+	return token
+}
+
+// validateAuthToken checks if a token is valid and consumes it (one-time use)
+func validateAuthToken(token string) bool {
+	authTokensMtx.Lock()
+	defer authTokensMtx.Unlock()
+	expiry, ok := authTokens[token]
+	if !ok {
+		return false
+	}
+	delete(authTokens, token)
+	return time.Now().Before(expiry)
+}
+
+// --- WebAuthn Handlers ---
+
+func handleWebAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" {
+		http.Error(w, "missing device_id", 400)
+		return
+	}
+
+	webauthnMtx.Lock()
+	user, exists := webauthnUsers[req.DeviceID]
+	if !exists {
+		id := make([]byte, 32)
+		rand.Read(id)
+		user = &WebAuthnUser{
+			ID:          id,
+			Name:        req.DeviceID,
+			DisplayName: strings.ToUpper(req.DeviceID),
+		}
+		webauthnUsers[req.DeviceID] = user
+	}
+	webauthnMtx.Unlock()
+
+	options, session, err := webAuthn.BeginRegistration(user)
+	if err != nil {
+		log.Printf("WebAuthn BeginRegistration error: %v", err)
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	pendingMtx.Lock()
+	pendingSessions[req.DeviceID+"_reg"] = session
+	pendingMtx.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(options)
+}
+
+func handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID == "" {
+		http.Error(w, "missing device_id", 400)
+		return
+	}
+
+	pendingMtx.Lock()
+	session, ok := pendingSessions[deviceID+"_reg"]
+	if ok {
+		delete(pendingSessions, deviceID+"_reg")
+	}
+	pendingMtx.Unlock()
+	if !ok {
+		http.Error(w, "no pending registration", 400)
+		return
+	}
+
+	webauthnMtx.RLock()
+	user := webauthnUsers[deviceID]
+	webauthnMtx.RUnlock()
+	if user == nil {
+		http.Error(w, "unknown device", 400)
+		return
+	}
+
+	credential, err := webAuthn.FinishRegistration(user, *session, r)
+	if err != nil {
+		log.Printf("WebAuthn FinishRegistration error: %v", err)
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	webauthnMtx.Lock()
+	user.Credentials = append(user.Credentials, *credential)
+	webauthnMtx.Unlock()
+
+	log.Printf("✅ Passkey registered for device: %s", deviceID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleWebAuthnAuthBegin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" {
+		http.Error(w, "missing device_id", 400)
+		return
+	}
+
+	webauthnMtx.RLock()
+	user, exists := webauthnUsers[req.DeviceID]
+	webauthnMtx.RUnlock()
+	if !exists || len(user.Credentials) == 0 {
+		http.Error(w, "no passkey registered", 404)
+		return
+	}
+
+	options, session, err := webAuthn.BeginLogin(user)
+	if err != nil {
+		log.Printf("WebAuthn BeginLogin error: %v", err)
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	pendingMtx.Lock()
+	pendingSessions[req.DeviceID+"_auth"] = session
+	pendingMtx.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(options)
+}
+
+func handleWebAuthnAuthFinish(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID == "" {
+		http.Error(w, "missing device_id", 400)
+		return
+	}
+
+	pendingMtx.Lock()
+	session, ok := pendingSessions[deviceID+"_auth"]
+	if ok {
+		delete(pendingSessions, deviceID+"_auth")
+	}
+	pendingMtx.Unlock()
+	if !ok {
+		http.Error(w, "no pending auth session", 400)
+		return
+	}
+
+	webauthnMtx.RLock()
+	user := webauthnUsers[deviceID]
+	webauthnMtx.RUnlock()
+	if user == nil {
+		http.Error(w, "unknown device", 400)
+		return
+	}
+
+	_, err := webAuthn.FinishLogin(user, *session, r)
+	if err != nil {
+		log.Printf("WebAuthn FinishLogin error: %v", err)
+		http.Error(w, err.Error(), 401)
+		return
+	}
+
+	token := generateAuthToken()
+	log.Printf("🔐 Passkey auth verified for device: %s", deviceID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "auth_token": token})
+}
+
+func handleWebAuthnStatus(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID == "" {
+		http.Error(w, "missing device_id", 400)
+		return
+	}
+
+	webauthnMtx.RLock()
+	user, exists := webauthnUsers[deviceID]
+	webauthnMtx.RUnlock()
+
+	registered := exists && len(user.Credentials) > 0
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"registered": registered})
+}
+
+func handleValidateToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		http.Error(w, "missing token", 400)
+		return
+	}
+
+	// Peek without consuming for validation check
+	authTokensMtx.RLock()
+	expiry, ok := authTokens[req.Token]
+	authTokensMtx.RUnlock()
+
+	valid := ok && time.Now().Before(expiry)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"valid": valid})
 }
 
 func getEthAddressFor(data *keygen.LocalPartySaveData) string {
@@ -180,12 +419,36 @@ func main() {
 	localIP := getLocalIP()
 	log.Printf("Starting Desktop Hub on %s:%d", localIP, myPort)
 
+	// Initialize WebAuthn
+	rpOrigin := fmt.Sprintf("https://%s:%d", localIP, myPort)
+	webAuthn, err = webauthn.New(&webauthn.Config{
+		RPDisplayName: "ZenWallet",
+		RPID:          localIP,
+		RPOrigins:     []string{rpOrigin, fmt.Sprintf("https://localhost:%d", myPort)},
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			AuthenticatorAttachment: protocol.Platform,
+			UserVerification:        protocol.VerificationRequired,
+		},
+	})
+	if err != nil {
+		log.Fatalf("WebAuthn init failed: %v", err)
+	}
+	log.Printf("🔐 WebAuthn initialized (RP: %s)", localIP)
+
+	// Generate TLS certificate for HTTPS (required for WebAuthn on mobile)
+	certFile, keyFile, err := ensureTLSCert(localIP)
+	if err != nil {
+		log.Fatalf("TLS cert generation failed: %v", err)
+	}
+	log.Printf("🔒 TLS certificate ready (%s, %s)", certFile, keyFile)
+
 	cors := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 			if r.Method == "OPTIONS" {
+				w.WriteHeader(204)
 				return
 			}
 			h(w, r)
@@ -198,6 +461,14 @@ func main() {
 	http.HandleFunc("/api/info", cors(handleInfo))
 	http.HandleFunc("/broadcast_signature", cors(handleBroadcastSignature))
 
+	// WebAuthn endpoints
+	http.HandleFunc("/webauthn/register/begin", cors(handleWebAuthnRegisterBegin))
+	http.HandleFunc("/webauthn/register/finish", cors(handleWebAuthnRegisterFinish))
+	http.HandleFunc("/webauthn/auth/begin", cors(handleWebAuthnAuthBegin))
+	http.HandleFunc("/webauthn/auth/finish", cors(handleWebAuthnAuthFinish))
+	http.HandleFunc("/webauthn/status", cors(handleWebAuthnStatus))
+	http.HandleFunc("/webauthn/validate-token", cors(handleValidateToken))
+
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/ui/", http.StripPrefix("/ui/", cors(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".wasm") {
@@ -208,7 +479,8 @@ func main() {
 
 	go forwardMessages()
 
-	log.Fatal(http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", myPort), nil))
+	log.Printf("🚀 ZenWallet Hub listening on https://%s:%d", localIP, myPort)
+	log.Fatal(http.ListenAndServeTLS(fmt.Sprintf("0.0.0.0:%d", myPort), certFile, keyFile, nil))
 }
 
 func handleInfo(w http.ResponseWriter, r *http.Request) {
