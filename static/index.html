@@ -13,6 +13,8 @@
       --primary: #3b82f6;
       --primary-hover: #2563eb;
       --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
       --text: #f8fafc;
       --text-muted: #94a3b8;
     }
@@ -54,6 +56,11 @@
       to { opacity: 1; transform: translateY(0); }
     }
 
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
     h1 {
       font-size: 28px;
       font-weight: 700;
@@ -84,6 +91,7 @@
     .info-row {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       margin-bottom: 8px;
     }
     .info-row:last-child {
@@ -102,6 +110,24 @@
     .badge.ready { background: rgba(16, 185, 129, 0.2); color: #34d399; }
     .badge.busy { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
     .badge.no_keys { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+    .passkey-badge {
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .passkey-badge.registered {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+    .passkey-badge.not-registered {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+    }
 
     button {
       width: 100%;
@@ -140,6 +166,16 @@
       background: rgba(255,255,255,0.15);
     }
 
+    .btn-passkey {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: white;
+      box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.39);
+    }
+    .btn-passkey:hover {
+      background: linear-gradient(135deg, #059669, #047857);
+      transform: translateY(-2px);
+    }
+
     .qrcode-container {
       display: none;
       flex-direction: column;
@@ -162,9 +198,57 @@
     }
 
     .hidden { display: none !important; }
+
+    /* Passkey auth overlay */
+    .auth-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.8);
+      backdrop-filter: blur(8px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .auth-overlay.active {
+      display: flex;
+    }
+    .auth-card {
+      background: var(--card-bg);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 24px;
+      padding: 40px;
+      text-align: center;
+      max-width: 360px;
+      width: 90%;
+      animation: fadeIn 0.3s ease-out;
+    }
+    .auth-icon {
+      font-size: 64px;
+      margin-bottom: 16px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .auth-card h2 {
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+    .auth-card p {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
   </style>
 </head>
 <body>
+
+  <!-- Auth overlay for biometric prompt -->
+  <div class="auth-overlay" id="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-icon">🔐</div>
+      <h2 id="auth-title">Authenticating...</h2>
+      <p id="auth-message">Verify your identity with Face ID or Touch ID to authorize this transaction.</p>
+    </div>
+  </div>
 
   <div class="glass-panel" id="loading-panel">
     <h1>ZenWallet</h1>
@@ -197,6 +281,10 @@
         <span>Address</span>
         <strong id="node-address" style="font-family: monospace; font-size: 12px;">-</strong>
       </div>
+      <div class="info-row" id="passkey-row" style="display: none;">
+        <span>Passkey</span>
+        <span class="passkey-badge not-registered" id="passkey-status">⚠ Not Registered</span>
+      </div>
     </div>
 
     <!-- Desktop Controls -->
@@ -228,6 +316,11 @@
         <p style="text-align: center; color: #34d399; font-weight: 600;">📱 WASM Crypto Engine Active</p>
       </div>
 
+      <!-- Passkey Registration Button -->
+      <button class="btn-passkey" id="btn-register-passkey" onclick="registerPasskey()" style="display: none;">
+        🔐 Register Passkey (Face ID / Touch ID)
+      </button>
+
       <button class="btn-secondary" id="btn-keygen-mobile" onclick="startKeygen()">
         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
         Participate in Keygen
@@ -235,14 +328,14 @@
 
       <button class="btn-primary" id="btn-sign-desktop" onclick="startSign('desktop')">
         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-        Sign with Desktop
+        🔐 Sign with Desktop
       </button>
 
       <button class="btn-secondary" id="btn-sign-mobile" onclick="startSign('other_mobile')">
         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
-        Sign with Other Mobile (Recovery)
+        🔐 Sign with Other Mobile (Recovery)
       </button>
-      <p style="text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 12px;">This phone calculates its signature securely using WASM.</p>
+      <p style="text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 12px;">Passkey (biometric) authentication is required before each signing operation.</p>
     </div>
 
   </div>
@@ -254,7 +347,194 @@
     let qrInst = null;
     let activeAddress = "";
     let renderedWallets = "";
+    let passkeyRegistered = false;
+    const hubUrl = window.location.protocol + "//" + window.location.host;
 
+    // --- Base64URL Helpers ---
+    function base64urlToBuffer(base64url) {
+      const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+      const pad = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4));
+      const binary = atob(base64 + pad);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    }
+
+    function bufferToBase64url(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    // --- WebAuthn Passkey Registration ---
+    async function registerPasskey() {
+      const btn = document.getElementById('btn-register-passkey');
+      btn.innerText = "Starting passkey registration...";
+      btn.disabled = true;
+
+      try {
+        // 1. Get registration options from server
+        const beginResp = await fetch(`${hubUrl}/webauthn/register/begin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: role })
+        });
+        const options = await beginResp.json();
+
+        // 2. Convert server options to WebAuthn API format
+        options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+        options.publicKey.user.id = base64urlToBuffer(options.publicKey.user.id);
+        if (options.publicKey.excludeCredentials) {
+          options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(c => ({
+            ...c, id: base64urlToBuffer(c.id)
+          }));
+        }
+
+        // 3. Create credential (triggers biometric prompt)
+        showAuthOverlay("Registering Passkey", "Use Face ID or Touch ID to create your passkey for this device.");
+        const credential = await navigator.credentials.create(options);
+        hideAuthOverlay();
+
+        // 4. Send credential to server for validation
+        const finishResp = await fetch(`${hubUrl}/webauthn/register/finish?device_id=${role}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: credential.id,
+            rawId: bufferToBase64url(credential.rawId),
+            type: credential.type,
+            response: {
+              attestationObject: bufferToBase64url(credential.response.attestationObject),
+              clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+            }
+          })
+        });
+
+        if (finishResp.ok) {
+          passkeyRegistered = true;
+          updatePasskeyUI();
+          console.log("✅ Passkey registered successfully!");
+        } else {
+          const errText = await finishResp.text();
+          alert("Passkey registration failed: " + errText);
+        }
+      } catch (e) {
+        console.error("Passkey registration error:", e);
+        hideAuthOverlay();
+        alert("Passkey registration failed. Make sure you're using HTTPS and a supported browser.\n\n" + e.message);
+      }
+
+      btn.innerHTML = '🔐 Register Passkey (Face ID / Touch ID)';
+      btn.disabled = false;
+    }
+
+    // --- WebAuthn Passkey Authentication ---
+    async function authenticateWithPasskey() {
+      try {
+        // 1. Get auth challenge from server
+        const beginResp = await fetch(`${hubUrl}/webauthn/auth/begin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: role })
+        });
+
+        if (!beginResp.ok) {
+          if (beginResp.status === 404) {
+            alert("No passkey registered! Please register a passkey first.");
+            return null;
+          }
+          throw new Error(await beginResp.text());
+        }
+
+        const options = await beginResp.json();
+
+        // 2. Convert server options
+        options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+        if (options.publicKey.allowCredentials) {
+          options.publicKey.allowCredentials = options.publicKey.allowCredentials.map(c => ({
+            ...c, id: base64urlToBuffer(c.id)
+          }));
+        }
+
+        // 3. Get assertion (triggers Face ID / Touch ID)
+        showAuthOverlay("Authenticate to Sign", "Use Face ID or Touch ID to authorize this MPC signing operation.");
+        const assertion = await navigator.credentials.get(options);
+        hideAuthOverlay();
+
+        // 4. Send assertion to server for verification
+        const finishResp = await fetch(`${hubUrl}/webauthn/auth/finish?device_id=${role}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: assertion.id,
+            rawId: bufferToBase64url(assertion.rawId),
+            type: assertion.type,
+            response: {
+              authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+              clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+              signature: bufferToBase64url(assertion.response.signature),
+              userHandle: assertion.response.userHandle ? bufferToBase64url(assertion.response.userHandle) : "",
+            }
+          })
+        });
+
+        if (finishResp.ok) {
+          const result = await finishResp.json();
+          console.log("🔐 Passkey auth verified, token received");
+          return result.auth_token;
+        } else {
+          const errText = await finishResp.text();
+          alert("Authentication failed: " + errText);
+          return null;
+        }
+      } catch (e) {
+        console.error("Passkey auth error:", e);
+        hideAuthOverlay();
+        alert("Passkey authentication failed:\n" + e.message);
+        return null;
+      }
+    }
+
+    // --- Auth Overlay ---
+    function showAuthOverlay(title, message) {
+      document.getElementById('auth-title').textContent = title;
+      document.getElementById('auth-message').textContent = message;
+      document.getElementById('auth-overlay').classList.add('active');
+    }
+
+    function hideAuthOverlay() {
+      document.getElementById('auth-overlay').classList.remove('active');
+    }
+
+    // --- Passkey UI ---
+    function updatePasskeyUI() {
+      const badge = document.getElementById('passkey-status');
+      const regBtn = document.getElementById('btn-register-passkey');
+
+      if (passkeyRegistered) {
+        badge.className = 'passkey-badge registered';
+        badge.textContent = '🔐 Registered';
+        regBtn.style.display = 'none';
+      } else {
+        badge.className = 'passkey-badge not-registered';
+        badge.textContent = '⚠ Not Registered';
+        regBtn.style.display = 'flex';
+      }
+    }
+
+    async function checkPasskeyStatus() {
+      try {
+        const resp = await fetch(`${hubUrl}/webauthn/status?device_id=${role}`);
+        const data = await resp.json();
+        passkeyRegistered = data.registered;
+        updatePasskeyUI();
+      } catch(e) {
+        console.warn("Could not check passkey status:", e);
+      }
+    }
+
+    // --- Core App Logic ---
     async function initApp() {
       if (isDesktop) {
         document.getElementById('loading-panel').classList.add('hidden');
@@ -271,10 +551,13 @@
           document.getElementById('loading-panel').classList.add('hidden');
           document.getElementById('app').classList.remove('hidden');
           document.getElementById('mobile-controls').classList.remove('hidden');
+          document.getElementById('passkey-row').style.display = 'flex';
 
-          const hubURL = window.location.protocol + "//" + window.location.host;
-          myInfo = wasmInit(role, hubURL);
+          myInfo = wasmInit(role, hubUrl);
           updateUI(myInfo);
+
+          // Check passkey registration status
+          await checkPasskeyStatus();
         } catch(e) {
           console.error("WASM load failed", e);
           document.getElementById('loading-panel').innerHTML = "<h1>WASM Error</h1><p>" + e.message + "</p>";
@@ -357,8 +640,17 @@
       } else {
         document.getElementById('btn-keygen-mobile').innerText = "Generating Key Share...";
         wasmKeygen();
-        setTimeout(() => { document.getElementById('btn-keygen-mobile').innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg> Participate in Keygen`;
-                           window.location.reload();
+        setTimeout(async () => {
+          document.getElementById('btn-keygen-mobile').innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg> Participate in Keygen`;
+          // After keygen, prompt passkey registration if not already registered
+          if (!passkeyRegistered) {
+            setTimeout(() => {
+              if (confirm("🔐 Keygen complete! Register a passkey (Face ID / Touch ID) to secure your signing operations?")) {
+                registerPasskey();
+              }
+            }, 500);
+          }
+          window.location.reload();
         }, 8000);
       }
     }
@@ -370,7 +662,8 @@
       const qrcodeEl = document.getElementById('qrcode');
       qrcodeEl.innerHTML = '';
       
-      const url = `http://${window.location.host}/ui/#${peerId}`;
+      // Use HTTPS URL for QR code
+      const url = `https://${window.location.host}/ui/#${peerId}`;
       document.getElementById('qr-text').textContent = `Scan to open WASM app for ${peerId.toUpperCase()}`;
 
       qrInst = new QRCode(qrcodeEl, {
@@ -390,19 +683,44 @@
         if (targetPeer === 'other_mobile') {
           targetPeer = (role === 'mobile1') ? 'mobile2' : 'mobile1';
         }
-        
+
+        // --- Passkey Authentication Gate ---
+        if (!passkeyRegistered) {
+          alert("🔐 You must register a passkey before signing. Press the 'Register Passkey' button first.");
+          return;
+        }
+
         const btnD = document.getElementById('btn-sign-desktop');
         const btnM = document.getElementById('btn-sign-mobile');
         btnD.disabled = true;
         btnM.disabled = true;
+
+        // Authenticate with passkey before signing
+        const authToken = await authenticateWithPasskey();
+        if (!authToken) {
+          btnD.disabled = false;
+          btnM.disabled = false;
+          return;
+        }
+
+        // Pass auth token to WASM
+        wasmSetAuthToken(authToken);
+
         btnD.innerText = "Signing locally (Takes ~5s)...";
         btnM.innerText = "...";
-        
-        wasmSign(targetPeer, activeAddress);
+
+        // Now proceed with MPC signing
+        const result = wasmSign(targetPeer, activeAddress);
+        if (typeof result === 'string' && result.startsWith('error:')) {
+          alert("Sign failed: " + result);
+          btnD.disabled = false;
+          btnM.disabled = false;
+          return;
+        }
         
         setTimeout(() => {
-          btnD.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg> Sign with Desktop`;
-          btnM.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg> Sign with Other Mobile (Recovery)`;
+          btnD.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg> 🔐 Sign with Desktop`;
+          btnM.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg> 🔐 Sign with Other Mobile (Recovery)`;
           btnD.disabled = false;
           btnM.disabled = false;
         }, 5000);

@@ -38,6 +38,10 @@ var (
 
 	signEndChan = make(chan *common.SignatureData, 1)
 	mtx         sync.Mutex
+
+	// Passkey auth token (set by JS after WebAuthn assertion)
+	authToken    string
+	authTokenMtx sync.Mutex
 )
 
 type WireMessage struct {
@@ -58,9 +62,37 @@ func main() {
 	js.Global().Set("wasmInit", js.FuncOf(wasmInit))
 	js.Global().Set("wasmKeygen", js.FuncOf(wasmKeygen))
 	js.Global().Set("wasmSign", js.FuncOf(wasmSign))
+	js.Global().Set("wasmSetAuthToken", js.FuncOf(wasmSetAuthToken))
+	js.Global().Set("wasmClearAuthToken", js.FuncOf(wasmClearAuthToken))
+	js.Global().Set("wasmHasAuthToken", js.FuncOf(wasmHasAuthToken))
 
 	go forwardMessages()
 	<-c
+}
+
+func wasmSetAuthToken(this js.Value, args []js.Value) any {
+	if len(args) < 1 {
+		return js.ValueOf("error: missing token")
+	}
+	authTokenMtx.Lock()
+	authToken = args[0].String()
+	authTokenMtx.Unlock()
+	fmt.Println("WASM: Auth token set (passkey verified)")
+	return js.ValueOf("ok")
+}
+
+func wasmClearAuthToken(this js.Value, args []js.Value) any {
+	authTokenMtx.Lock()
+	authToken = ""
+	authTokenMtx.Unlock()
+	return js.ValueOf("ok")
+}
+
+func wasmHasAuthToken(this js.Value, args []js.Value) any {
+	authTokenMtx.Lock()
+	has := authToken != ""
+	authTokenMtx.Unlock()
+	return js.ValueOf(has)
 }
 
 func getEthAddressFor(data *keygen.LocalPartySaveData) string {
@@ -191,6 +223,15 @@ func wasmSign(this js.Value, args []js.Value) any {
 		return js.ValueOf("error: missing target peer or wallet address")
 	}
 
+	// Check passkey authentication
+	authTokenMtx.Lock()
+	hasAuth := authToken != ""
+	authTokenMtx.Unlock()
+	if !hasAuth {
+		fmt.Println("WASM: ❌ Sign rejected — no passkey auth token")
+		return js.ValueOf("error: passkey authentication required")
+	}
+
 	targetPeer := args[0].String()
 	walletAddr := args[1].String()
 
@@ -301,6 +342,11 @@ func captureSignResult() {
 	mtx.Lock()
 	defer mtx.Unlock()
 	currentParty = nil
+
+	// Consume auth token after signing (one-time use)
+	authTokenMtx.Lock()
+	authToken = ""
+	authTokenMtx.Unlock()
 
 	sigData := map[string]any{
 		"r": hex.EncodeToString(res.R),
