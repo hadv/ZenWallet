@@ -36,12 +36,22 @@ var (
 	myPort  int
 	rpcURL  string
 	chainID int64
+
+	hsmEnabled    bool
+	hsmModule     string
+	hsmTokenLabel string
+	hsmPIN        string
 )
 
 func init() {
 	flag.IntVar(&myPort, "port", 8081, "Port this Hub listens on")
 	flag.StringVar(&rpcURL, "rpc", "http://127.0.0.1:8545", "Ethereum RPC URL")
 	flag.Int64Var(&chainID, "chain", 31337, "Ethereum Chain ID")
+	
+	flag.BoolVar(&hsmEnabled, "hsm", false, "Enable HSM for keyshare encryption")
+	flag.StringVar(&hsmModule, "hsm-module", "/usr/local/lib/softhsm/libsofthsm2.so", "PKCS#11 module path")
+	flag.StringVar(&hsmTokenLabel, "hsm-token", "zenwallet", "HSM token label")
+	flag.StringVar(&hsmPIN, "hsm-pin", "", "HSM PIN (if empty, prompts interactively)")
 }
 
 var (
@@ -81,6 +91,8 @@ var (
 	authTokensMtx   sync.RWMutex
 	pendingSessions = make(map[string]*webauthn.SessionData) // deviceID -> session
 	pendingMtx      sync.Mutex
+
+	hsmMgr *HSMManager
 )
 
 type WireMessage struct {
@@ -364,28 +376,72 @@ func saveKeys(data *keygen.LocalPartySaveData) {
 
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err == nil {
-		fname := fmt.Sprintf("desktop_keys_%s.json", addr)
-		os.WriteFile(fname, b, 0644)
-		log.Printf("Saved Desktop keys to disk for wallet: %s", addr)
+		if hsmMgr != nil {
+			encrypted, err := hsmMgr.EncryptKeyshare(b)
+			if err == nil {
+				fname := fmt.Sprintf("desktop_keys_%s.enc", addr)
+				os.WriteFile(fname, encrypted, 0600)
+				log.Printf("Saved Desktop keys (HSM encrypted) to disk for wallet: %s", addr)
+			} else {
+				log.Printf("Failed to encrypt desktop keys for wallet %s: %v", addr, err)
+			}
+		} else {
+			fname := fmt.Sprintf("desktop_keys_%s.json", addr)
+			os.WriteFile(fname, b, 0644)
+			log.Printf("Saved Desktop keys (plaintext) to disk for wallet: %s", addr)
+		}
 	}
 }
 
 func loadKeys() {
-	files, err := filepath.Glob("desktop_keys_*.json")
-	if err != nil {
-		return
-	}
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err == nil {
-			var data keygen.LocalPartySaveData
-			if json.Unmarshal(b, &data) == nil {
-				addr := getEthAddressFor(&data)
-				keyDataMap[addr] = &data
-				if activeAddress == "" {
-					activeAddress = addr
+	// Try encrypted files first
+	files, err := filepath.Glob("desktop_keys_*.enc")
+	if err == nil && len(files) > 0 {
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err == nil && hsmMgr != nil {
+				decrypted, err := hsmMgr.DecryptKeyshare(b)
+				if err == nil {
+					var data keygen.LocalPartySaveData
+					if json.Unmarshal(decrypted, &data) == nil {
+						addr := getEthAddressFor(&data)
+						keyDataMap[addr] = &data
+						if activeAddress == "" {
+							activeAddress = addr
+						}
+						log.Printf("Loaded HSM encrypted Desktop keys for wallet: %s", addr)
+					}
+					// Zero out decrypted data
+					for i := range decrypted {
+						decrypted[i] = 0
+					}
+				} else {
+					log.Printf("HSM decryption failed for %s: %v", f, err)
 				}
-				log.Printf("Loaded existing Desktop keys for wallet: %s", addr)
+			} else if hsmMgr == nil {
+				log.Printf("Found encrypted keyshare %s but HSM is not enabled", f)
+			}
+		}
+	}
+
+	// Also look for plaintext files
+	files, err = filepath.Glob("desktop_keys_*.json")
+	if err == nil {
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err == nil {
+				var data keygen.LocalPartySaveData
+				if json.Unmarshal(b, &data) == nil {
+					addr := getEthAddressFor(&data)
+					// Don't overwrite if it was already loaded from .enc
+					if _, exists := keyDataMap[addr]; !exists {
+						keyDataMap[addr] = &data
+						if activeAddress == "" {
+							activeAddress = addr
+						}
+						log.Printf("Loaded plaintext Desktop keys for wallet: %s", addr)
+					}
+				}
 			}
 		}
 	}
@@ -393,6 +449,28 @@ func loadKeys() {
 
 func main() {
 	flag.Parse()
+
+	if hsmEnabled {
+		pin := hsmPIN
+		if pin == "" {
+			fmt.Printf("HSM Enabled. Please enter PIN for token '%s': ", hsmTokenLabel)
+			fmt.Scanln(&pin)
+		}
+		
+		cfg := HSMConfig{
+			Enabled:    true,
+			Module:     hsmModule,
+			TokenLabel: hsmTokenLabel,
+			PIN:        pin,
+			KEKLabel:   "desktop_master_kek",
+		}
+		var err error
+		hsmMgr, err = NewHSMManager(cfg)
+		if err != nil {
+			log.Fatalf("Failed to initialize HSM: %v", err)
+		}
+		log.Printf("🔐 HSM integration successfully initialized")
+	}
 
 	var err error
 	client, err = ethclient.Dial(rpcURL)
@@ -538,7 +616,13 @@ func startKeygen(w http.ResponseWriter, r *http.Request) {
 	params := tss.NewParameters(tss.S256(), allParties, localPartyID, 3, 1)
 
 	log.Println("Desktop generating PreParams...")
-	preParams, _ := keygen.GeneratePreParams(1 * time.Minute)
+	var preParams *keygen.LocalPreParams
+	if hsmMgr != nil {
+		log.Println("Desktop generating PreParams using HSM TRNG...")
+		preParams, _ = keygen.GeneratePreParamsWithSource(1*time.Minute, hsmMgr.SecureRandReader())
+	} else {
+		preParams, _ = keygen.GeneratePreParams(1 * time.Minute)
+	}
 
 	currentParty = keygen.NewLocalParty(params, outChan, keygenEndChan, *preParams)
 

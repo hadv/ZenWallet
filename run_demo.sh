@@ -5,7 +5,13 @@ pkill -f zennode 2>/dev/null || true
 pkill -f anvil 2>/dev/null || true
 
 echo "Building Hub Server..."
-go build -o zennode hub_server.go tls_cert.go
+if [ "$1" = "--hsm" ]; then
+    echo "Compiling with HSM support..."
+    ./scripts/setup_softhsm.sh
+    go build -tags hsm -o zennode hub_server.go tls_cert.go hsm.go hsm_noop.go
+else
+    go build -o zennode hub_server.go tls_cert.go hsm.go hsm_noop.go
+fi
 if [ $? -ne 0 ]; then
     echo "Hub Server compilation failed!"
     exit 1
@@ -24,8 +30,15 @@ anvil > anvil.log 2>&1 &
 ANVIL_PID=$!
 sleep 2
 
-echo "Starting Desktop Hub Server (Port 8081 — HTTPS)..."
-./zennode -port 8081 > desktop.log 2>&1 &
+if [ "$1" = "--hsm" ]; then
+    echo "Starting Desktop Hub Server with HSM (Port 8081 — HTTPS)..."
+    read -s -p "🔑 Enter HSM PIN: " HSM_PIN
+    echo ""
+    ./zennode -port 8081 --hsm --hsm-module /usr/local/lib/softhsm/libsofthsm2.so --hsm-token zenwallet --hsm-pin "$HSM_PIN" > desktop.log 2>&1 &
+else
+    echo "Starting Desktop Hub Server (Port 8081 — HTTPS)..."
+    ./zennode -port 8081 > desktop.log 2>&1 &
+fi
 
 sleep 2
 LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || echo "127.0.0.1")
