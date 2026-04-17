@@ -26,10 +26,15 @@ import (
 )
 
 var (
-	myPort   int
-	myID     string
-	rpcURL   string
-	chainID  int64
+	myPort  int
+	myID    string
+	rpcURL  string
+	chainID int64
+	
+	hsmEnabled    bool
+	hsmModule     string
+	hsmTokenLabel string
+	hsmPIN        string
 )
 
 func init() {
@@ -37,6 +42,11 @@ func init() {
 	flag.StringVar(&myID, "id", "desktop", "ID of this node (desktop, mobile1, mobile2)")
 	flag.StringVar(&rpcURL, "rpc", "http://127.0.0.1:8545", "Ethereum RPC URL")
 	flag.Int64Var(&chainID, "chain", 31337, "Ethereum Chain ID")
+	
+	flag.BoolVar(&hsmEnabled, "hsm", false, "Enable HSM for keyshare encryption")
+	flag.StringVar(&hsmModule, "hsm-module", "/usr/local/lib/softhsm/libsofthsm2.so", "PKCS#11 module path")
+	flag.StringVar(&hsmTokenLabel, "hsm-token", "zenwallet", "HSM token label")
+	flag.StringVar(&hsmPIN, "hsm-pin", "", "HSM PIN (if empty, prompts interactively)")
 }
 
 var (
@@ -64,6 +74,8 @@ var (
 	currentMsgId  *big.Int
 	signingPeers  *tss.PeerContext // Used when picking 2 of 3 to sign
 	signPeerNames []string
+	
+	hsmMgr *HSMManager
 )
 
 type WireMessage struct {
@@ -111,18 +123,52 @@ func saveKeys() {
 		log.Printf("Failed to marshal keys: %v", err)
 		return
 	}
-	fname := fmt.Sprintf("%s_keys.json", myID)
-	err = os.WriteFile(fname, b, 0644)
-	if err != nil {
-		log.Printf("Failed to save keys to %s: %v", fname, err)
+	
+	if hsmMgr != nil {
+		encrypted, err := hsmMgr.EncryptKeyshare(b)
+		if err == nil {
+			fname := fmt.Sprintf("%s_keys.enc", myID)
+			os.WriteFile(fname, encrypted, 0600)
+			log.Printf("Saved keys (HSM encrypted) to %s", fname)
+		} else {
+			log.Printf("Failed to encrypt desktop keys: %v", err)
+		}
 	} else {
-		log.Printf("Saved keys to %s", fname)
+		fname := fmt.Sprintf("%s_keys.json", myID)
+		err = os.WriteFile(fname, b, 0644)
+		if err != nil {
+			log.Printf("Failed to save keys to %s: %v", fname, err)
+		} else {
+			log.Printf("Saved keys to %s", fname)
+		}
 	}
 }
 
 func loadKeys() {
+	var b []byte
+	var err error
+	
+	encryptedName := fmt.Sprintf("%s_keys.enc", myID)
+	b, err = os.ReadFile(encryptedName)
+	if err == nil && hsmMgr != nil {
+		decrypted, err := hsmMgr.DecryptKeyshare(b)
+		if err == nil {
+			var data keygen.LocalPartySaveData
+			if json.Unmarshal(decrypted, &data) == nil {
+				keyData = &data
+				log.Printf("Loaded HSM encrypted keys from %s", encryptedName)
+				for i := range decrypted {
+					decrypted[i] = 0
+				}
+				return
+			}
+		} else {
+			log.Printf("HSM decryption failed for %s: %v", encryptedName, err)
+		}
+	}
+	
 	fname := fmt.Sprintf("%s_keys.json", myID)
-	b, err := os.ReadFile(fname)
+	b, err = os.ReadFile(fname)
 	if err != nil {
 		return
 	}
@@ -138,6 +184,28 @@ func loadKeys() {
 
 func main() {
 	flag.Parse()
+
+	if hsmEnabled {
+		pin := hsmPIN
+		if pin == "" {
+			fmt.Printf("HSM Enabled. Please enter PIN for token '%s': ", hsmTokenLabel)
+			fmt.Scanln(&pin)
+		}
+		
+		cfg := HSMConfig{
+			Enabled:    true,
+			Module:     hsmModule,
+			TokenLabel: hsmTokenLabel,
+			PIN:        pin,
+			KEKLabel:   myID + "_master_kek",
+		}
+		var err error
+		hsmMgr, err = NewHSMManager(cfg)
+		if err != nil {
+			log.Fatalf("Failed to initialize HSM: %v", err)
+		}
+		log.Printf("🔐 HSM integration successfully initialized for %s", myID)
+	}
 
 	var err error
 	client, err = ethclient.Dial(rpcURL)
@@ -241,7 +309,13 @@ func startKeygen(w http.ResponseWriter, r *http.Request) {
 	params := tss.NewParameters(tss.S256(), allParties, localPartyID, 3, 1)
 
 	log.Println("Generating PreParams...")
-	preParams, _ := keygen.GeneratePreParams(1 * time.Minute)
+	var preParams *keygen.LocalPreParams
+	if hsmMgr != nil {
+		log.Println("Generating PreParams using HSM TRNG...")
+		preParams, _ = keygen.GeneratePreParamsWithSource(1*time.Minute, hsmMgr.SecureRandReader())
+	} else {
+		preParams, _ = keygen.GeneratePreParams(1 * time.Minute)
+	}
 
 	log.Println("Initializing Keygen LocalParty...")
 	currentParty = keygen.NewLocalParty(params, outChan, keygenEndChan, *preParams)

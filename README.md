@@ -228,3 +228,35 @@ When the PRF extension is not supported (older browsers/authenticators), ZenWall
 - 🔒 **Registered (Encrypted)** — keyshares are encrypted with hardware-backed key
 - 🔐 **Registered** — passkey works, but PRF not supported (plaintext storage)
 - ⚠️ **Not Registered** — no passkey, no encryption
+
+---
+
+## 🏛️ Enterprise Security: Desktop HSM Integration
+
+To protect the server-side architecture, the Desktop Hub supports native **Hardware Security Module (HSM)** integration via the **PKCS#11** standard. When enabled, desktop keyshares are never stored on disk in plaintext and are never exposed during rest.
+
+### How It Works
+
+| Layer | Architecture |
+|:---|:---|
+| **Storage at Rest** | Desktop keyshares are encrypted via AES-256-GCM. The Key Encryption Key (KEK) is generated and resides permanently inside the HSM. |
+| **Runtime Decryption** | Keyshares are decrypted dynamically only in memory during a signing ceremony, then aggressively zeroed out. |
+| **Entropy (TRNG)** | The Distributed Key Generation (DKG) `PreParams` ceremony relies on the HSM's True Random Number Generator for maximum cryptographic entropy. |
+
+### Running with HSM
+
+For local development, we use **SoftHSM2**, a software emulation of a cryptographic token. 
+
+```bash
+# Provide the --hsm flag to the demo script
+./run_demo.sh --hsm
+```
+
+The script will:
+1. Initialize a `zenwallet` SoftHSM token if it doesn't exist
+2. Compile the Desktop Hub using `//go:build hsm` tags (which links `crypto11` and `pkcs11`)
+3. Interactively prompt you for the HSM PIN (`1234` by default)
+4. Encrypt all newly generated keyshares into `.enc` ciphertext files instead of `.json`.
+
+> [!WARNING]
+> **Disaster Recovery (HA):** Because keyshares are securely bound to the HSM, losing the HSM configuration or KEK results in permanent loss of the Desktop keyshare. For production, organizations must perform standard HSM Key Export Ceremonies to securely backup the KEK to redundant geographic regions. (Note: because ZenWallet uses a `2-of-3` scheme, the two mobile clients can still independently recover the wallet even if the Desktop HSM is physically destroyed).
