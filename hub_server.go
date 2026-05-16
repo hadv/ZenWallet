@@ -617,13 +617,20 @@ func startKeygen(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Desktop generating PreParams...")
 	var preParams *keygen.LocalPreParams
+	var err error
 	if hsmMgr != nil {
 		log.Println("Desktop generating PreParams using HSM TRNG...")
 		ppCtx, ppCancel := context.WithTimeout(context.Background(), 1*time.Minute)
-		preParams, _ = keygen.GeneratePreParamsWithContextAndRandom(ppCtx, hsmMgr.SecureRandReader())
-		ppCancel()
+		defer ppCancel()
+		preParams, err = keygen.GeneratePreParamsWithContextAndRandom(ppCtx, hsmMgr.SecureRandReader())
 	} else {
-		preParams, _ = keygen.GeneratePreParams(1 * time.Minute)
+		preParams, err = keygen.GeneratePreParams(1 * time.Minute)
+	}
+
+	if err != nil {
+		log.Printf("Failed to generate PreParams: %v", err)
+		http.Error(w, "Failed to generate keygen parameters", http.StatusInternalServerError)
+		return
 	}
 
 	currentParty = keygen.NewLocalParty(params, outChan, keygenEndChan, *preParams)
