@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
-	"github.com/bnb-chain/tss-lib/v2/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/v2/ecdsa/signing"
-	"github.com/bnb-chain/tss-lib/v2/tss"
+	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v3/ecdsa/signing"
+	"github.com/bnb-chain/tss-lib/v3/tss"
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -617,11 +617,20 @@ func startKeygen(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Desktop generating PreParams...")
 	var preParams *keygen.LocalPreParams
+	var err error
 	if hsmMgr != nil {
 		log.Println("Desktop generating PreParams using HSM TRNG...")
-		preParams, _ = keygen.GeneratePreParamsWithSource(1*time.Minute, hsmMgr.SecureRandReader())
+		ppCtx, ppCancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer ppCancel()
+		preParams, err = keygen.GeneratePreParamsWithContextAndRandom(ppCtx, hsmMgr.SecureRandReader())
 	} else {
-		preParams, _ = keygen.GeneratePreParams(1 * time.Minute)
+		preParams, err = keygen.GeneratePreParams(1 * time.Minute)
+	}
+
+	if err != nil {
+		log.Printf("Failed to generate PreParams: %v", err)
+		http.Error(w, "Failed to generate keygen parameters", http.StatusInternalServerError)
+		return
 	}
 
 	currentParty = keygen.NewLocalParty(params, outChan, keygenEndChan, *preParams)
