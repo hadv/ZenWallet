@@ -1,14 +1,16 @@
 module zenwallet
 
-go 1.25.0
+go 1.25.1
 
 require (
-	github.com/bnb-chain/tss-lib/v2 v2.0.2
+	github.com/ThalesGroup/crypto11 v1.6.0
+	github.com/bnb-chain/tss-lib/v3 v3.0.0
 	github.com/ethereum/go-ethereum v1.17.2
 	github.com/go-webauthn/webauthn v0.16.3
 )
 
 require (
+	filippo.io/bigmod v0.1.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
@@ -41,12 +43,14 @@ require (
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/ipfs/go-log v1.0.5 // indirect
 	github.com/ipfs/go-log/v2 v2.1.3 // indirect
+	github.com/miekg/pkcs11 v1.1.1 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/otiai10/primes v0.0.0-20210501021515-f1b2be525a11 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/supranational/blst v0.3.16 // indirect
+	github.com/thales-e-security/pool v0.0.2 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect

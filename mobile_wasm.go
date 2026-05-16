@@ -11,10 +11,10 @@ import (
 	"syscall/js"
 	"time"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
-	"github.com/bnb-chain/tss-lib/v2/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/v2/ecdsa/signing"
-	"github.com/bnb-chain/tss-lib/v2/tss"
+	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v3/ecdsa/signing"
+	"github.com/bnb-chain/tss-lib/v3/tss"
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
