@@ -26,18 +26,28 @@ ZenWallet uses **WebAuthn Passkeys** as a biometric gatekeeper for MPC signing o
 
 ### How It Works
 
-```mermaid
-flowchart TD
-    subgraph Mobile["📱 Mobile Device"]
-        direction LR
-        SE["🔒 Secure Enclave<br/>(P-256 key)<br/>Face ID / Touch ID"]
-        WASM["⚙️ WASM Runtime<br/>MPC keyshare (secp256k1)<br/>tss-lib threshold party"]
-        
-        SE -- auth gate --> WASM
-    end
-    
-    User(("👤 User")) -- Biometric scan --> SE
-    WASM <-->|TSS messages| Hub["🖥️ Hub Server (HTTPS)"]
+```
+                User
+                 |
+                 | Biometric scan (Face ID / Touch ID)
+                 v
+   +------------------------------------------------+
+   |                Mobile Device                   |
+   |                                                |
+   |  +-----------------+      +-----------------+  |
+   |  | Secure Enclave  | auth |  WASM Runtime   |  |
+   |  |   (P-256 key)   |----->|   (secp256k1)   |  |
+   |  | Face / Touch ID | gate |    tss-lib      |  |
+   |  +-----------------+      +--------+--------+  |
+   |                                    |           |
+   +------------------------------------|-----------+
+                                        |
+                                        | TSS messages
+                                        v
+                              +-------------------+
+                              |    Hub Server     |
+                              |      (HTTPS)      |
+                              +-------------------+
 ```
 
 ### Signing Flow
